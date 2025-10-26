@@ -117,15 +117,14 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
 
     if pos.is_none() {
         // no whitespace!? just return what we have
-        let s = Syslog {
+        return Some(Syslog {
                         facility,
                         severity,
                         timestamp,
                         hostname,
                         appname,
                         message:contents
-                    };
-        return Some(s);
+                    });
     }
 
     let pos:usize = pos.unwrap();
