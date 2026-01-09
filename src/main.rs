@@ -187,9 +187,30 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
                 } )
 }
 
-fn hex_dump( buf: &[u8] ) {
+
+fn hex_dump(buf: &[u8]) {
+    let mut counter = 0;
+    for chunk in buf.chunks(16) {
+        let s1 = chunk
+            .iter()
+            .map(|x| format!("{:02X}", x))
+            .collect::<Vec<String>>()
+            .join(" ");
+
+        let s2 = chunk
+            .iter()
+            .map(|x| if *x >= 0x20 && *x <= 0x73  {*x as char} else {'.'})
+            .collect::<String>();
+
+        println!("{:#010X} {:48} {}", counter, s1, s2);
+        counter += chunk.len();
+    }
+}
+
+fn _old_hex_dump( buf: &[u8] ) {
     let mut counter = 0;
     let mut s = String::new();
+
     for b in buf {
         print!("{:02x} ", b);
 
@@ -226,10 +247,11 @@ fn main() -> std::io::Result<()> {
         match socket.recv_from(&mut buf) {
             Ok((size, _src)) => {
                 hex_dump(&buf[..size]);
-                let raw_message = String::from_utf8_lossy(&buf[..size]);
+
+//                let raw_message = String::from_utf8_lossy(&buf[..size]);
 //                println!("Received from {}: {}", src, raw_message);
-                
-                print!("{}", raw_message);
+//                print!("{}", raw_message);
+
                 if let Some(logmsg) = parse_syslog_message(&buf[..size]) {
                     println!("Parsed Syslog Message:");
                     println!("  Facility: {}", logmsg.facility);
@@ -246,6 +268,7 @@ fn main() -> std::io::Result<()> {
                 eprintln!("Failed to receive data: {}", e);
             }
         }
+        // just do one message (for testing)
 //        break;
     }
     Ok(())
