@@ -8,6 +8,7 @@
 
 use std::net::UdpSocket;
 //use regex::Regex;
+// https://docs.rs/chrono/0.4.42/chrono/index.html
 use chrono::prelude::*;
 use chrono::format::{ ParseError };
 
@@ -40,12 +41,18 @@ fn get_contents(buf: &[u8]) -> Result<String, std::string::FromUtf8Error> {
 fn parse_timestamp(s:&str) -> Result<DateTime<FixedOffset>, ParseError> {
     // e.g. 20251019T070037-0600
 
-    println!("parse_timestamp s={}", s);
+//    println!("parse_timestamp s={}", s);
     // with lots of help from Rust Rover (Claude 4.5)
     let dt: Result<DateTime<FixedOffset>, ParseError> = if s.contains('-') {
         DateTime::parse_from_str(s, TIMESTAMP_WITH_TZ)
             .inspect_err(|e| println!("Error parsing date: {}", e))
     } else {
+        /*  FIXME! 
+         *
+         *  do NOT blindly add UTC TZ to timestamp without TZ.
+         *  Add a way to know TZ vs no-TZ timestamp.
+         *
+         */
         NaiveDateTime::parse_from_str(s, TIMESTAMP_WITHOUT_TZ)
             .map(|naive| naive.and_utc().fixed_offset())
             .inspect_err(|e| println!("Error parsing naive date: {}", e))
@@ -61,6 +68,35 @@ struct Syslog {
     hostname: Option<String>,
     appname: Option<String>,
     message: String
+}
+
+impl std::fmt::Display for Syslog
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let timestamp = match &self.timestamp {
+            Some(ts) => ts.to_string(),
+            None => "??".to_string()
+        };
+
+        let hostname:&str = match &self.hostname {
+            Some(s) => s,
+            None => &"??".to_string()
+        };
+
+        let appname:&str = match &self.appname {
+            Some(s) => s,
+            None => &"??".to_string()
+        };
+        
+        // timestamp has whitespace so surround with()
+        write!(f, "({}) {} {} {} {} {}",  
+                timestamp,
+                self.facility,
+                self.severity,
+                hostname,
+                appname,
+                self.message)
+    }
 }
 
 fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
@@ -87,7 +123,7 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
     }
 
     let pri:u8 = std::str::from_utf8(&buf[1..idx]).ok()?.parse().ok()?;
-    println!("pri={}",pri);
+//    println!("pri={}",pri);
     
     let facility = pri / 8;
     let severity = pri % 8;
@@ -103,7 +139,7 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
         }
     };
     // from this point on, we get to parse a String!  Yay!
-    println!("contents={}",contents);
+//    println!("contents={}",contents);
 
     let timestamp: Option<DateTime<FixedOffset>> = None;
     let hostname: Option<String> = None;
@@ -131,10 +167,10 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
     let timestamp = 
         match parse_timestamp(&contents[..pos]) {
             Ok(ts) => {
-                println!("ts={:?}", ts);
-                println!("offset={}", ts.timezone());
-                println!("Time: {}:{}:{}", ts.hour(), ts.minute(), ts.second());
-                println!("Date: {}{}{} {}", ts.year(), ts.month(), ts.day(), ts.timezone());
+//                println!("ts={:?}", ts);
+//                println!("offset={}", ts.timezone());
+//                println!("Time: {}:{}:{}", ts.hour(), ts.minute(), ts.second());
+//                println!("Date: {}{}{} {}", ts.year(), ts.month(), ts.day(), ts.timezone());
                 Some(ts)
             },
             Err(_) => None
@@ -172,7 +208,7 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
     }
 
     let next:usize = pos + next.unwrap();
-    println!("pos={} next={}", pos, next);
+//    println!("pos={} next={}", pos, next);
     let appname = Some(contents[pos..next].to_string());
 
     let pos:usize = next+1;
@@ -190,6 +226,9 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
 
 fn hex_dump(buf: &[u8]) {
     let mut counter = 0;
+
+    let _str1: Vec<char> = Vec::new();
+
     for chunk in buf.chunks(16) {
         let s1 = chunk
             .iter()
@@ -199,7 +238,7 @@ fn hex_dump(buf: &[u8]) {
 
         let s2 = chunk
             .iter()
-            .map(|x| if *x >= 0x20 && *x <= 0x73  {*x as char} else {'.'})
+            .map(|x| if *x >= 0x20 && *x <= 0x7e  {*x as char} else {'.'})
             .collect::<String>();
 
         println!("{:#010X} {:48} {}", counter, s1, s2);
@@ -246,20 +285,17 @@ fn main() -> std::io::Result<()> {
     loop {
         match socket.recv_from(&mut buf) {
             Ok((size, _src)) => {
-                hex_dump(&buf[..size]);
-
-//                let raw_message = String::from_utf8_lossy(&buf[..size]);
-//                println!("Received from {}: {}", src, raw_message);
-//                print!("{}", raw_message);
+//                hex_dump(&buf[..size]);
 
                 if let Some(logmsg) = parse_syslog_message(&buf[..size]) {
-                    println!("Parsed Syslog Message:");
-                    println!("  Facility: {}", logmsg.facility);
-                    println!("  Severity: {}", logmsg.severity);
-                    println!("  Timestamp: {:?}", logmsg.timestamp);
-                    println!("  Hostname: {:?}", logmsg.hostname);
-                    println!("  App Name: {:?}", logmsg.appname);
-                    println!("  Message: {:?}", logmsg.message);
+                    print!("{}", logmsg);
+//                    println!("Parsed Syslog Message:");
+//                    println!("  Facility: {}", logmsg.facility);
+//                    println!("  Severity: {}", logmsg.severity);
+//                    println!("  Timestamp: {:?}", logmsg.timestamp);
+//                    println!("  Hostname: {:?}", logmsg.hostname);
+//                    println!("  App Name: {:?}", logmsg.appname);
+//                    println!("  Message: {:?}", logmsg.message);
                 } else {
                     println!("  Failed to parse syslog message.");
                 }
