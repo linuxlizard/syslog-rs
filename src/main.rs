@@ -19,22 +19,20 @@ const TIMESTAMP_WITHOUT_TZ:&str = "%Y%m%dT%H%M%S";
 // https://www.rfc-editor.org/rfc/rfc5424
 
 fn get_contents(buf: &[u8]) -> Result<String, std::string::FromUtf8Error> {
-    // make best effort to extract a human readable string from the message
+    // make the best effort to extract a human-readable string from the message
 
     // first look for possible RFC-5424 BOM
     // https://en.wikipedia.org/wiki/Byte_order_mark
     // ef bb bf indicates UTF-8
-    let contents = if buf[0] == 0xef && buf[1] == 0xbb && buf[2] == 0xbf 
-    {
+    let contents = if buf.starts_with(&[0xef, 0xbb, 0xbf]) {
         // expect a valid UTF8 string (this is probably a mistake (waves to
         // Future Dave))
         String::from_utf8(buf[3..].to_vec())?
     }
     else {
         // hope for the best
-        String::from_utf8_lossy(&buf.to_vec()).to_string()
+        String::from_utf8_lossy(buf).to_string() //&buf.to_vec()).to_string()
     };
-
     Ok(contents)
 }
 
@@ -73,28 +71,16 @@ struct Syslog {
 impl std::fmt::Display for Syslog
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let timestamp = match &self.timestamp {
-            Some(ts) => ts.to_string(),
-            None => "??".to_string()
-        };
-
-        let hostname:&str = match &self.hostname {
-            Some(s) => s,
-            None => &"??".to_string()
-        };
-
-        let appname:&str = match &self.appname {
-            Some(s) => s,
-            None => &"??".to_string()
-        };
-        
         // timestamp has whitespace so surround with()
         write!(f, "({}) {} {} {} {} {}",  
-                timestamp,
+                self.timestamp
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(||"??".to_string()),
                 self.facility,
                 self.severity,
-                hostname,
-                appname,
+                self.hostname.as_deref().unwrap_or("??"),
+                self.appname.as_deref().unwrap_or("??"),
                 self.message)
     }
 }
@@ -246,34 +232,6 @@ fn hex_dump(buf: &[u8]) {
     }
 }
 
-fn _old_hex_dump( buf: &[u8] ) {
-    let mut counter = 0;
-    let mut s = String::new();
-
-    for b in buf {
-        print!("{:02x} ", b);
-
-        if *b >= 0x20 && *b <= 0x7e {
-            s.push(*b as char);
-        }
-        else {
-            s.push('.');
-        }
-
-        counter += 1;
-        if counter==16 {
-            println!(" {}", s);
-            s.clear();
-            counter = 0;
-        }
-    }
-    if counter != 0 {
-        let whitespace:String = "   ".repeat(16-counter);
-        println!("{} {}", whitespace, s);
-    }
-
-}
-
 fn main() -> std::io::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:5514")?;
     println!("Listening for syslog messages on port 5514...");
@@ -307,7 +265,7 @@ fn main() -> std::io::Result<()> {
         // just do one message (for testing)
 //        break;
     }
-    Ok(())
+
 }
 
 
@@ -344,7 +302,7 @@ mod tests {
 
         let s = "qqqq1024T200456-0600 (IBR1700-f11)";
         match DateTime::parse_and_remainder(s, TIMESTAMP_WITH_TZ) {
-            Ok((x, remainder)) => {
+            Ok((thex, remainder)) => {
                 println!("remainder={}",remainder);
             },
             Err(e) => {
