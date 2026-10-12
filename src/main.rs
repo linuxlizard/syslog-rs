@@ -11,6 +11,20 @@ use std::net::UdpSocket;
 // https://docs.rs/chrono/0.4.42/chrono/index.html
 use chrono::prelude::*;
 use chrono::format::{ ParseError };
+use clap::Parser;
+
+/// A syslog server tuned for Cradlepoint routers
+#[derive(Parser, Debug, Clone, PartialEq)]
+#[command(version, about, long_about = None)]
+pub struct Args {
+    /// Enable debug mode
+    #[arg(long)]
+    pub debug: bool,
+
+    /// UDP port to listen on
+    #[arg(long, default_value_t = 5514)]
+    pub port: u16,
+}
 
 const TIMESTAMP_WITH_TZ:&str = "%Y%m%dT%H%M%S%z";
 const TIMESTAMP_WITHOUT_TZ:&str = "%Y%m%dT%H%M%S";
@@ -18,28 +32,19 @@ const TIMESTAMP_WITHOUT_TZ:&str = "%Y%m%dT%H%M%S";
 // https://www.rfc-editor.org/rfc/rfc3164
 // https://www.rfc-editor.org/rfc/rfc5424
 
-fn get_contents(buf: &[u8]) -> Result<String, std::string::FromUtf8Error> {
+fn get_contents(buf: &[u8]) -> String {
     // make the best effort to extract a human-readable string from the message
 
     // first look for possible RFC-5424 BOM
     // https://en.wikipedia.org/wiki/Byte_order_mark
     // ef bb bf indicates UTF-8
-    let contents = if buf.starts_with(&[0xef, 0xbb, 0xbf]) {
-        // expect a valid UTF8 string (this is probably a mistake (waves to
-        // Future Dave))
-        String::from_utf8(buf[3..].to_vec())?
-    }
-    else {
-        // hope for the best
-        String::from_utf8_lossy(buf).to_string() //&buf.to_vec()).to_string()
-    };
-    Ok(contents)
+    let payload = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(buf);
+    String::from_utf8_lossy(payload).into_owned()
 }
 
 fn parse_timestamp(s:&str) -> Result<DateTime<FixedOffset>, ParseError> {
     // e.g. 20251019T070037-0600
 
-//    println!("parse_timestamp s={}", s);
     // with lots of help from Rust Rover (Claude 4.5)
     let dt: Result<DateTime<FixedOffset>, ParseError> = if s.contains('-') {
         DateTime::parse_from_str(s, TIMESTAMP_WITH_TZ)
@@ -59,6 +64,7 @@ fn parse_timestamp(s:&str) -> Result<DateTime<FixedOffset>, ParseError> {
     dt
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct Syslog {
     facility: u8,
     severity: u8,
@@ -86,13 +92,11 @@ impl std::fmt::Display for Syslog
 }
 
 fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
-    
     let mut idx = 0;
 
     // must start with '<' == 0x3c
-    if buf[idx] != 0x3c {
-        // TODO report why failed
-        return None
+    if !buf.starts_with(b"<") {
+        return None;
     }
 
     idx += 1;
@@ -101,6 +105,11 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
     while buf[idx] != 0x3e {
         idx += 1;
 
+        if idx >= buf.len() {
+            // ran out of buffer
+            return None;
+        }
+
         // should only be a small number
         if idx > 6 {
             // TODO report why failed
@@ -108,25 +117,19 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
         }
     }
 
-    let pri:u8 = std::str::from_utf8(&buf[1..idx]).ok()?.parse().ok()?;
-//    println!("pri={}",pri);
-    
+    let pri:u8 = std::str::from_utf8(&buf[1..idx])
+        .ok()?
+        .parse()
+        .ok()?;
+
     let facility = pri / 8;
     let severity = pri % 8;
 
     idx += 1;
 
-    let contents = match get_contents(&buf[idx..]) {
-        Ok(s) => s,
-        Err(e) => {
-            let err = e.utf8_error();
-            eprintln!("utf8 decode error; valid up to {}", err.valid_up_to());
-            return None
-        }
-    };
-    // from this point on, we get to parse a String!  Yay!
-//    println!("contents={}",contents);
+    let contents = get_contents(&buf[idx..]);
 
+    // from this point on, we get to parse a String!  Yay!
     let timestamp: Option<DateTime<FixedOffset>> = None;
     let hostname: Option<String> = None;
     let appname: Option<String> = None;
@@ -211,30 +214,35 @@ fn parse_syslog_message(buf: &[u8] ) -> Option<Syslog> {
 
 
 fn hex_dump(buf: &[u8]) {
-    let mut counter = 0;
 
     let _str1: Vec<char> = Vec::new();
 
-    for chunk in buf.chunks(16) {
-        let s1 = chunk
-            .iter()
-            .map(|x| format!("{:02X}", x))
-            .collect::<Vec<String>>()
-            .join(" ");
+    for (i,chunk) in buf.chunks(16).enumerate() {
+        let offset = i * 16;
 
-        let s2 = chunk
+        // build hex part
+        let mut hex_part = String::with_capacity(48);
+        for byte in chunk {
+            use std::fmt::Write;
+            let _ = write!(hex_part, "{:02X} ", byte);
+        }
+
+        // build ascii part
+        let ascii_part: String = chunk
             .iter()
             .map(|x| if *x >= 0x20 && *x <= 0x7e  {*x as char} else {'.'})
-            .collect::<String>();
+            .collect();
 
-        println!("{:#010X} {:48} {}", counter, s1, s2);
-        counter += chunk.len();
+        println!("{offset:#010X} {hex_part:48} {ascii_part}");
+
     }
 }
 
 fn main() -> std::io::Result<()> {
-    let socket = UdpSocket::bind("0.0.0.0:5514")?;
-    println!("Listening for syslog messages on port 5514...");
+    let args = Args::parse();
+
+    let socket = UdpSocket::bind(("0.0.0.0", args.port))?;
+    println!("Listening for syslog messages on port {}...", args.port);
     
     let now: DateTime<Local> = Local::now();
     println!("now={}", now);
@@ -243,17 +251,12 @@ fn main() -> std::io::Result<()> {
     loop {
         match socket.recv_from(&mut buf) {
             Ok((size, _src)) => {
-//                hex_dump(&buf[..size]);
+                if args.debug {
+                    hex_dump(&buf[..size]);
+                }
 
                 if let Some(logmsg) = parse_syslog_message(&buf[..size]) {
-                    print!("{}", logmsg);
-//                    println!("Parsed Syslog Message:");
-//                    println!("  Facility: {}", logmsg.facility);
-//                    println!("  Severity: {}", logmsg.severity);
-//                    println!("  Timestamp: {:?}", logmsg.timestamp);
-//                    println!("  Hostname: {:?}", logmsg.hostname);
-//                    println!("  App Name: {:?}", logmsg.appname);
-//                    println!("  Message: {:?}", logmsg.message);
+                    print!("{}\n", logmsg);
                 } else {
                     println!("  Failed to parse syslog message.");
                 }
